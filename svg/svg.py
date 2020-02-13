@@ -25,7 +25,8 @@ import xml.etree.ElementTree as etree
 import itertools
 import operator
 import json
-from .geometry import *
+from geometry import *
+import math
 
 svg_ns = '{http://www.w3.org/2000/svg}'
 
@@ -90,7 +91,7 @@ class Transformable:
             op = op.strip()
             # Keep only numbers
             arg = [float(x) for x in re.findall(number_re, arg)]
-            print('transform: ' + op + ' '+ str(arg))
+            print('transform: ' + op + ' '+ str(arg), file=sys.stderr)
 
             if op == 'matrix':
                 self.matrix *= Matrix(arg)
@@ -169,6 +170,10 @@ class Transformable:
         flat = copy.deepcopy(self.items)
         while i < len(flat):
             while isinstance(flat[i], Group):
+                if not flat[i].items:
+                    flat.pop(i)
+                    i -= 1
+                    break
                 flat[i:i+1] = flat[i].items
             i += 1
         return flat
@@ -210,8 +215,8 @@ class Svg(Transformable):
         self.items.append(top_group)
 
         # SVG dimension
-        width = self.xlength(self.root.get('width'))
-        height = self.ylength(self.root.get('height'))
+        width = self.xlength(self.root.get('width') or "210mm")
+        height = self.ylength(self.root.get('height') or "297mm")
         # update viewport
         top_group.viewport = Point(width, height)
 
@@ -252,7 +257,7 @@ class Group(Transformable):
         for elt in element:
             elt_class = svgClass.get(elt.tag, None)
             if elt_class is None:
-                print('No handler for element %s' % elt.tag)
+                print('No handler for element %s' % elt.tag, file=sys.stderr)
                 continue
             # instanciate elt associated class (e.g. <path>: item = Path(elt)
             item = elt_class(elt)
@@ -445,14 +450,14 @@ class Path(Transformable):
                 flags = pathlst.pop().strip()
                 large_arc_flag = flags[0]
                 if large_arc_flag not in '01':
-                    print('Arc parsing failure')
+                    print('Arc parsing failure', file=sys.stderr)
                     break
 
                 if len(flags) > 1:  flags = flags[1:].strip()
                 else:               flags = pathlst.pop().strip()
                 sweep_flag = flags[0]
                 if sweep_flag not in '01':
-                    print('Arc parsing failure')
+                    print('Arc parsing failure', file=sys.stderr)
                     break
 
                 if len(flags) > 1:  x = flags[1:]
@@ -460,7 +465,7 @@ class Path(Transformable):
                 y = pathlst.pop()
                 # TODO
                 print('ARC: ' +
-                    ', '.join([rx, ry, xrot, large_arc_flag, sweep_flag, x, y]))
+                      ', '.join([rx, ry, xrot, large_arc_flag, sweep_flag, x, y]), file=sys.stderr)
 #                self.items.append(
 #                    Arc(rx, ry, xrot, large_arc_flag, sweep_flag, Point(x, y)))
 
@@ -654,6 +659,52 @@ class Line(Transformable):
 
     def simplify(self, precision):
         return self.segments(precision)
+
+class Polyline(Transformable):
+    '''SVG <polyline>'''
+    # class Polyline handles the <polyline> tag
+    tag = 'polyline'
+
+    def __init__(self, elt=None):
+        Transformable.__init__(self, elt)
+        if elt is not None:
+            self.style = elt.get('style')
+            self.parse(elt.get('points'))
+
+    def parse(self, pointsstr):
+        """Parse polyline string and build elements list"""
+
+        pointlst = re.findall(number_re, pointsstr)
+
+        def grouper(iterable, n, fillvalue=None):
+            "Collect data into fixed-length chunks or blocks"
+            # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+            args = [iter(iterable)] * n
+            return itertools.zip_longest(*args, fillvalue=fillvalue)
+            
+        for x, y in grouper(pointlst, 2):
+            self.items.append(Point(self.xlength(x), self.ylength(y)))
+
+    def __str__(self):
+        return '\n'.join(str(x) for x in self.items)
+
+    def __repr__(self):
+        return '<Polyline ' + self.id + '>'
+
+    def transform(self, matrix):
+        self.items = [self.matrix * p for p in self.items]
+        
+    def segments(self, precision=0):
+        return [self.items]
+
+    def simplify(self, precision):
+        '''Simplify segment with precision:
+           Remove any point which are ~aligned'''
+        ret = []
+        for seg in self.segments(precision):
+            ret.append(simplify_segment(seg, precision))
+
+        return ret
 
 # overwrite JSONEncoder for svg classes which have defined a .json() method
 class JSONEncoder(json.JSONEncoder):
